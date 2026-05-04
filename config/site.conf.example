@@ -1,0 +1,17 @@
+# Copy this file to config/site.conf and edit it for each site
+
+SITE_NAME="mt-michael-adsb"
+
+LAT="-45.001984"
+LON="169.130896"
+ALT_M="1159"
+
+RECEIVER_GAIN="auto"
+
+# FR24 sharing key
+# Leave blank for first manual setup
+FR24_KEY=""
+
+# ADS-B Exchange UUID
+# Leave blank for first manual setup
+ADSBX_UUID=""
