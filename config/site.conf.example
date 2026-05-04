@@ -1,5 +1,3 @@
-# Copy this file to config/site.conf and edit it for each site
-
 SITE_NAME="site-name-adsb"
 
 LAT="-45.000000"
