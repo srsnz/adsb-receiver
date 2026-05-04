@@ -1,10 +1,10 @@
 # Copy this file to config/site.conf and edit it for each site
 
-SITE_NAME="mt-michael-adsb"
+SITE_NAME="site-name-adsb"
 
-LAT="-45.001984"
-LON="169.130896"
-ALT_M="1159"
+LAT="-45.000000"
+LON="169.000000"
+ALT_M="300"
 
 RECEIVER_GAIN="auto"
 
