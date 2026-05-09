@@ -65,6 +65,8 @@ NEEDS_REBOOT=0
 EEPROM_OUT=$(rtl_eeprom 2>&1 || true)
 DETECTED_SERIAL=$(echo "$EEPROM_OUT" | grep -i "Serial number:" | awk -F': ' '{print $2}' | tr -d '[:space:]')
 
+echo "Current dongle serial: '${DETECTED_SERIAL:-none}'"
+
 # Treat blank, 0, all-zeros, or the RTL-SDR Blog V4 default as non-unique
 SERIAL_IS_UNIQUE=0
 if [ -n "$DETECTED_SERIAL" ] \
@@ -75,7 +77,7 @@ if [ -n "$DETECTED_SERIAL" ] \
 fi
 
 if [ "$SERIAL_IS_UNIQUE" = "1" ]; then
-    echo "Detected serial: $DETECTED_SERIAL"
+    echo "Serial is unique, using: $DETECTED_SERIAL"
     if [ "${RTLSDR_SERIAL:-}" != "$DETECTED_SERIAL" ]; then
         echo "Saving RTLSDR_SERIAL to config/site.conf..."
         if grep -q "^RTLSDR_SERIAL=" config/site.conf; then
@@ -86,13 +88,13 @@ if [ "$SERIAL_IS_UNIQUE" = "1" ]; then
         RTLSDR_SERIAL="$DETECTED_SERIAL"
     fi
 else
-    echo "No unique serial found (got: '${DETECTED_SERIAL:-none}') — writing one to EEPROM..."
+    echo "Serial is not unique — writing a new one to EEPROM..."
     NEW_SERIAL="ADSB$(shuf -i 1000-9999 -n 1)"
     WRITE_OUT=$(printf '\n' | rtl_eeprom -s "$NEW_SERIAL" 2>&1 || true)
     echo "$WRITE_OUT"
 
     if echo "$WRITE_OUT" | grep -qi "write\|written\|ok\|done"; then
-        echo "Serial '$NEW_SERIAL' written."
+        echo "Serial '$NEW_SERIAL' written to EEPROM."
         if grep -q "^RTLSDR_SERIAL=" config/site.conf; then
             sed -i "s/^RTLSDR_SERIAL=.*/RTLSDR_SERIAL=${NEW_SERIAL}/" config/site.conf
         else
@@ -100,6 +102,7 @@ else
         fi
         RTLSDR_SERIAL="$NEW_SERIAL"
 
+        # Rebind USB device so kernel re-reads the new serial from EEPROM
         echo "Rebinding USB device to apply new serial..."
         USB_SYSFS=$(for d in /sys/bus/usb/devices/*/; do
             vid=$(cat "$d/idVendor" 2>/dev/null)
@@ -112,14 +115,24 @@ else
 
         if [ -n "$USB_SYSFS" ]; then
             USB_DEV=$(basename "$USB_SYSFS")
-            echo "  Found at sysfs: $USB_DEV"
+            echo "  Unbinding $USB_DEV..."
             echo "$USB_DEV" | sudo tee /sys/bus/usb/drivers/usb/unbind > /dev/null
-            sleep 1
-            echo "$USB_DEV" | sudo tee /sys/bus/usb/drivers/usb/bind > /dev/null
             sleep 2
-            echo "  USB device rebound successfully."
+            echo "  Rebinding $USB_DEV..."
+            echo "$USB_DEV" | sudo tee /sys/bus/usb/drivers/usb/bind > /dev/null
+            sleep 3
+
+            # Verify the rebind worked by re-reading the serial
+            VERIFY_SERIAL=$(rtl_eeprom 2>&1 | grep -i "Serial number:" | awk -F': ' '{print $2}' | tr -d '[:space:]')
+            if [ "$VERIFY_SERIAL" = "$NEW_SERIAL" ]; then
+                echo "  Confirmed: dongle now reports serial '$NEW_SERIAL'"
+            else
+                echo "  WARNING: Dongle still reports '$VERIFY_SERIAL' after rebind."
+                echo "  A reboot is needed to apply the new serial."
+                NEEDS_REBOOT=1
+            fi
         else
-            echo "  WARNING: Could not find device in sysfs — will reboot to apply serial."
+            echo "  WARNING: Could not find device in sysfs — reboot required to apply serial."
             NEEDS_REBOOT=1
         fi
     else
@@ -128,20 +141,27 @@ else
     fi
 fi
 
-echo "RTL-SDR ready. Using: ${RTLSDR_SERIAL:-'(index 0 fallback)'}"
-
-# Build readsb device arg
-if [ -n "${RTLSDR_SERIAL:-}" ]; then
-    DEVICE_ARG="--device ${RTLSDR_SERIAL}"
-else
+# If reboot is needed, the serial in EEPROM is correct but the kernel hasn't
+# seen it yet. Fall back to --device 0 for this install run — it will still
+# work since there's only one dongle. After reboot the serial will be used.
+if [ "${NEEDS_REBOOT}" = "1" ]; then
+    echo "Note: Using --device 0 for this install. After reboot readsb will use serial ${RTLSDR_SERIAL}."
     DEVICE_ARG="--device 0"
+else
+    if [ -n "${RTLSDR_SERIAL:-}" ]; then
+        DEVICE_ARG="--device ${RTLSDR_SERIAL}"
+    else
+        DEVICE_ARG="--device 0"
+    fi
 fi
+
+echo "RTL-SDR device arg: $DEVICE_ARG"
 
 # ── Install readsb ────────────────────────────────────────────
 echo "Installing readsb..."
 sudo bash -c "$(wget -q -O - https://raw.githubusercontent.com/wiedehopf/adsb-scripts/master/readsb-install.sh)"
 
-# Write our config AFTER the install script (which may have written its own defaults)
+# Write our config AFTER the install script finishes (it may write its own defaults)
 echo "Configuring readsb..."
 sudo tee /etc/default/readsb > /dev/null <<EOF
 RECEIVER_OPTIONS="--device-type rtlsdr ${DEVICE_ARG} --gain ${RECEIVER_GAIN:-40}"
@@ -160,19 +180,42 @@ else
     echo "  ✓ readsb running"
 fi
 
-# ── Install FR24 feeder ───────────────────────────────────────
-echo "Installing FR24 feeder (no wizard)..."
+# ── Install FR24 feeder (no wizard) ───────────────────────────
+echo "Installing FR24 feeder..."
 
-# Add FR24 repo and install via apt — this avoids the install_fr24_rpi.sh wizard entirely
-sudo bash -c 'echo "deb http://repo.feed.flightradar24.com flightradar24 raspberrypi-stable" > /etc/apt/sources.list.d/fr24feed.list'
-sudo apt-get install -y dirmngr
-sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys C969F07840C430F5 2>/dev/null || \
-    wget -qO - https://repo.feed.flightradar24.com/flightradar24.pub | sudo apt-key add -
+# Step 1: Add the FR24 apt repo key and source
+# Use signed-by method (modern Debian/bookworm approach — avoids apt-key deprecation)
+sudo mkdir -p /etc/apt/keyrings
+wget -qO - https://repo-feed.flightradar24.com/flightradar24.pub \
+    | sudo gpg --dearmor -o /etc/apt/keyrings/flightradar24.gpg 2>/dev/null || \
+    wget -qO /etc/apt/keyrings/flightradar24.gpg https://repo-feed.flightradar24.com/flightradar24.pub
+
+echo "deb [signed-by=/etc/apt/keyrings/flightradar24.gpg] http://repo.feed.flightradar24.com flightradar24 raspberrypi-stable" \
+    | sudo tee /etc/apt/sources.list.d/fr24feed.list > /dev/null
+
 sudo apt-get update -y
+
+# Step 2: Write the config BEFORE installing the package.
+# fr24feed's postinst script checks for an existing ini and skips the wizard if found.
+echo "Writing FR24 config before package install to suppress wizard..."
+sudo mkdir -p /etc/
+sudo tee /etc/fr24feed.ini > /dev/null <<EOF
+receiver="beast-tcp"
+host="127.0.0.1:30005"
+fr24key="${FR24_KEY}"
+bs="no"
+raw="no"
+logmode="1"
+windowmode="0"
+mpx="no"
+mlat="yes"
+mlat-without-gps="yes"
+EOF
+
+# Step 3: Install the package — postinst will see the ini and skip the wizard
 sudo apt-get install -y fr24feed
 
-# Write config BEFORE starting the service so it never runs the signup wizard
-echo "Writing FR24 config..."
+# Step 4: Ensure config is still correct (package install might have overwritten it)
 sudo tee /etc/fr24feed.ini > /dev/null <<EOF
 receiver="beast-tcp"
 host="127.0.0.1:30005"
@@ -196,8 +239,8 @@ else
     echo "  ✓ fr24feed running"
 fi
 
-# ── Install ADS-B Exchange feeder ────────────────────────────
-echo "Installing ADS-B Exchange feeder (no wizard)..."
+# ── Install ADS-B Exchange feeder (no wizard) ─────────────────
+echo "Installing ADS-B Exchange feeder..."
 
 # Generate UUID if not set
 if [ -z "${ADSBX_UUID:-}" ]; then
@@ -210,13 +253,8 @@ if [ -z "${ADSBX_UUID:-}" ]; then
     fi
 fi
 
-# Install the feedclient software (update.sh is non-interactive, unlike feed.sh)
-curl -L -o /tmp/axfeed.sh https://adsbexchange.com/feed.sh
-# We bypass the configure.sh wizard by pre-writing /etc/default/adsbexchange
-# then running only the update/install portion
-sudo mkdir -p /usr/local/share/adsbexchange
-
-# Write the ADSB Exchange config directly — format from official configure.sh source
+# Write /etc/default/adsbexchange BEFORE running feed.sh so it skips configure.sh
+# Format taken directly from the official ADSBexchange/feedclient configure.sh source
 sudo tee /etc/default/adsbexchange > /dev/null <<EOF
 INPUT="127.0.0.1:30005"
 REDUCE_INTERVAL="0.5"
@@ -237,13 +275,13 @@ NET_OPTIONS="--net-heartbeat 60 --net-ro-size 1280 --net-ro-interval 0.2 --net-r
 JSON_OPTIONS="--max-range 450 --json-location-accuracy 2 --range-outline-hours 24"
 EOF
 
-# Now run feed.sh — it will detect the existing config and skip the wizard
+# feed.sh checks for /etc/default/adsbexchange and skips configure.sh if it exists
+curl -L -o /tmp/axfeed.sh https://adsbexchange.com/feed.sh
 sudo bash /tmp/axfeed.sh
 
-# Set the UUID after install (feed.sh creates the service files)
-if [ -f /usr/local/share/adsbexchange/uuid ]; then
-    echo "$ADSBX_UUID" | sudo tee /usr/local/share/adsbexchange/uuid > /dev/null
-fi
+# Write UUID to where the feedclient stores it
+sudo mkdir -p /usr/local/share/adsbexchange
+echo "$ADSBX_UUID" | sudo tee /usr/local/share/adsbexchange/uuid > /dev/null
 
 sudo systemctl enable adsbexchange-feed 2>/dev/null || true
 sudo systemctl enable adsbexchange-mlat 2>/dev/null || true
@@ -254,12 +292,12 @@ sleep 3
 # ── Service status ────────────────────────────────────────────
 echo ""
 echo "=== Service Status ==="
-systemctl is-active --quiet readsb             && echo "  ✓ readsb"           || echo "  ✗ readsb           — sudo journalctl -u readsb -n 50"
-systemctl is-active --quiet fr24feed           && echo "  ✓ fr24feed"         || echo "  ✗ fr24feed         — sudo journalctl -u fr24feed -n 50"
-systemctl is-active --quiet adsbexchange-feed  2>/dev/null \
-                                               && echo "  ✓ adsbexchange-feed" || echo "  ✗ adsbexchange-feed — sudo journalctl -u adsbexchange-feed -n 50"
-systemctl is-active --quiet adsbexchange-mlat  2>/dev/null \
-                                               && echo "  ✓ adsbexchange-mlat" || echo "  ✗ adsbexchange-mlat — sudo journalctl -u adsbexchange-mlat -n 50"
+systemctl is-active --quiet readsb              && echo "  ✓ readsb"            || echo "  ✗ readsb            — sudo journalctl -u readsb -n 50"
+systemctl is-active --quiet fr24feed            && echo "  ✓ fr24feed"          || echo "  ✗ fr24feed          — sudo journalctl -u fr24feed -n 50"
+systemctl is-active --quiet adsbexchange-feed   2>/dev/null \
+                                                && echo "  ✓ adsbexchange-feed" || echo "  ✗ adsbexchange-feed — sudo journalctl -u adsbexchange-feed -n 50"
+systemctl is-active --quiet adsbexchange-mlat   2>/dev/null \
+                                                && echo "  ✓ adsbexchange-mlat" || echo "  ✗ adsbexchange-mlat — sudo journalctl -u adsbexchange-mlat -n 50"
 
 echo ""
 echo "VRS Beast connection:"
@@ -274,7 +312,8 @@ echo "  ADSBX: https://www.adsbexchange.com/myip"
 # ── Reboot if required ────────────────────────────────────────
 if [ "${NEEDS_REBOOT}" = "1" ]; then
     echo ""
-    echo "A reboot is required to apply USB serial changes."
+    echo "A reboot is required to apply the RTL-SDR serial change."
+    echo "After reboot, readsb will use serial '${RTLSDR_SERIAL}' instead of --device 0."
     echo "Rebooting in 10 seconds... (Ctrl+C to cancel)"
     sleep 10
     sudo reboot
