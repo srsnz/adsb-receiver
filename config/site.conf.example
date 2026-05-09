@@ -1,15 +1,19 @@
-SITE_NAME="site-name-adsb"
+# Site identity
+SITE_NAME="My ADS-B Site"
 
-LAT="-45.000000"
-LON="169.000000"
-ALT_M="300"
+# Location (decimal degrees, WGS84)
+LAT=-44.700
+LON=169.130
+ALT_M=350
 
-RECEIVER_GAIN="auto"
+# RTL-SDR gain (0–49.6, or "auto")
+RECEIVER_GAIN=40
 
-# FR24 sharing key
-# Leave blank for first manual setup
-FR24_KEY=""
+# RTL-SDR serial number (leave blank if only one dongle)
+RTLSDR_SERIAL=
 
-# ADS-B Exchange UUID
-# Leave blank for first manual setup
-ADSBX_UUID=""
+# FR24 sharing key (get from fr24feed signup or existing install)
+FR24_KEY=
+
+# ADS-B Exchange UUID (leave blank to auto-generate on first install)
+ADSBX_UUID=
