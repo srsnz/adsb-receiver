@@ -1,19 +1,45 @@
-# Site identity
-SITE_NAME="My ADS-B Site"
+# =============================================================
+# SRS ADS-B Receiver - Site Configuration
+# =============================================================
+# Copy this file to config/site.conf and fill in your values:
+#   cp config/site.conf.example config/site.conf
+#   nano config/site.conf
+# =============================================================
 
-# Location (decimal degrees, WGS84)
+# ── Site identity ─────────────────────────────────────────────
+# A short name for this receiver (no spaces)
+SITE_NAME="My-ADSB-Site"
+
+# ── Location ──────────────────────────────────────────────────
+# Decimal degrees, WGS84. Use negative for South/West.
+# You can get these from Google Maps (right-click your location)
 LAT=-44.700
 LON=169.130
+
+# Altitude of your antenna above sea level in metres
 ALT_M=350
 
-# RTL-SDR gain (0–49.6, or "auto")
+# ── RTL-SDR ───────────────────────────────────────────────────
+# Gain in dB. 40 is a safe starting point.
+# Valid values: 0, 0.9, 1.4, 2.7, 3.7, 7.7, 8.7, 12.5, 14.4,
+#   15.7, 16.6, 19.7, 20.7, 22.9, 25.4, 28.0, 29.7, 32.8,
+#   33.8, 36.4, 37.2, 38.6, 40.2, 42.1, 43.4, 43.9, 44.5,
+#   48.0, 49.6
 RECEIVER_GAIN=40
 
-# RTL-SDR serial number (leave blank if only one dongle)
+# Serial number of your RTL-SDR dongle.
+# Leave blank — the installer will detect and fill this in automatically.
+# If you already know your dongle's serial, you can enter it here.
 RTLSDR_SERIAL=
 
-# FR24 sharing key (get from fr24feed signup or existing install)
+# ── FR24 ──────────────────────────────────────────────────────
+# Your Flightradar24 sharing key.
+# Get this from https://www.flightradar24.com/share-your-data
+# or from an existing FR24 install: cat /etc/fr24feed.ini | grep fr24key
 FR24_KEY=
 
-# ADS-B Exchange UUID (leave blank to auto-generate on first install)
+# ── ADS-B Exchange ────────────────────────────────────────────
+# Your ADS-B Exchange feeder UUID.
+# Leave blank — the installer will generate one automatically and save it here.
+# If you have an existing UUID from a previous install, enter it to keep continuity.
 ADSBX_UUID=
