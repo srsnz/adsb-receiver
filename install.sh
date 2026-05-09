@@ -59,9 +59,22 @@ echo "Found: $RTLSDR_LSUSB"
 # ── Read or set RTL-SDR serial ────────────────────────────────
 NEEDS_REBOOT=0
 
-DETECTED_SERIAL=$(rtl_eeprom 2>&1 | grep -i "Serial number:" | grep -oP '(?<=Serial number:\s{0,10})\S+' | head -1)
+# Dump full rtl_eeprom output (read-only, no prompts on plain call)
+EEPROM_OUT=$(rtl_eeprom 2>&1 || true)
 
-if [ -n "$DETECTED_SERIAL" ] && [ "$DETECTED_SERIAL" != "0" ] && [ "$DETECTED_SERIAL" != "00000000" ]; then
+# Parse serial using awk — no PCRE needed
+DETECTED_SERIAL=$(echo "$EEPROM_OUT" | grep -i "Serial number:" | awk -F': ' '{print $2}' | tr -d '[:space:]')
+
+# Treat blank, 0, all-zeros, or the common RTL-SDR Blog default as non-unique
+SERIAL_IS_UNIQUE=0
+if [ -n "$DETECTED_SERIAL" ] \
+    && [ "$DETECTED_SERIAL" != "0" ] \
+    && [ "$DETECTED_SERIAL" != "00000000" ] \
+    && [ "$DETECTED_SERIAL" != "00000001" ]; then
+    SERIAL_IS_UNIQUE=1
+fi
+
+if [ "$SERIAL_IS_UNIQUE" = "1" ]; then
     echo "Detected serial: $DETECTED_SERIAL"
 
     if [ "${RTLSDR_SERIAL:-}" != "$DETECTED_SERIAL" ]; then
@@ -80,7 +93,11 @@ else
 
     NEW_SERIAL="ADSB$(shuf -i 1000-9999 -n 1)"
 
-    if rtl_eeprom -s "$NEW_SERIAL" 2>&1 | grep -qi "write\|written\|ok"; then
+    # printf '\n' sends a bare newline to answer the "Press Enter to write" prompt
+    WRITE_OUT=$(printf '\n' | rtl_eeprom -s "$NEW_SERIAL" 2>&1 || true)
+    echo "$WRITE_OUT"
+
+    if echo "$WRITE_OUT" | grep -qi "write\|written\|ok\|done"; then
         echo "Serial '$NEW_SERIAL' written to EEPROM."
 
         if grep -q "^RTLSDR_SERIAL=" config/site.conf; then
@@ -119,6 +136,7 @@ else
 
     else
         echo "WARNING: Could not write serial to EEPROM. Falling back to --device 0."
+        echo "  rtl_eeprom output was: $WRITE_OUT"
         RTLSDR_SERIAL=""
     fi
 fi
@@ -203,11 +221,10 @@ sudo systemctl restart adsbexchange-feed 2>/dev/null || true
 # ── Service status ────────────────────────────────────────────
 echo ""
 echo "=== Service Status ==="
-systemctl is-active --quiet readsb          && echo "  ✓ readsb"           || echo "  ✗ readsb           — sudo journalctl -u readsb -n 50"
-systemctl is-active --quiet fr24feed        && echo "  ✓ fr24feed"         || echo "  ✗ fr24feed         — sudo journalctl -u fr24feed -n 50"
+systemctl is-active --quiet readsb          && echo "  ✓ readsb"       || echo "  ✗ readsb       — sudo journalctl -u readsb -n 50"
+systemctl is-active --quiet fr24feed        && echo "  ✓ fr24feed"     || echo "  ✗ fr24feed     — sudo journalctl -u fr24feed -n 50"
 systemctl is-active --quiet adsbexchange-feed 2>/dev/null \
-                                            && echo "  ✓ adsbexchange"     || echo "  ? adsbexchange     — sudo journalctl -u adsbexchange-feed -n 50"
-
+                                            && echo "  ✓ adsbexchange" || echo "  ? adsbexchange — sudo journalctl -u adsbexchange-feed -n 50"
 echo ""
 echo "VRS Beast connection:"
 echo "  Host:   $(hostname -I | awk '{print $1}')"
