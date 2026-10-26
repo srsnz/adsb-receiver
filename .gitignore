@@ -1,0 +1,6 @@
+.env
+*.key
+*.pem
+*.log
+config/site.conf
+fr24feed.ini
