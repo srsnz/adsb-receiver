@@ -13,3 +13,9 @@ for s in readsb dump1090-fa dump1090-mutability fr24feed adsbexchange-feed adsbe
   fi
 done
 printf '\nThis checks local processes and connectivity only; confirm accepted aircraft uploads on provider dashboards.\n'
+
+printf '\nFR24 status:\n'; if command -v fr24feed-status >/dev/null; then fr24feed-status 2>&1 || true; else echo 'Not installed'; fi
+printf '\nFR24 Beast configuration (without sharing key):\n'; if [[ -r /etc/fr24feed.ini ]]; then grep -E '^(receiver|host|bs|raw|mlat)=' /etc/fr24feed.ini || true; else echo 'Use sudo to inspect /etc/fr24feed.ini'; fi
+printf '\nRecent ADSBx connection events:\n'; journalctl -u adsbexchange-feed --since '30 minutes ago' --no-pager 2>/dev/null | grep -E 'Connection established|Connection refused|Name resolution|disconnected' | tail -8 || true
+printf '\nOpenSky recent connectivity:\n'; journalctl -u opensky-feeder --since '30 minutes ago' --no-pager 2>/dev/null | grep -Ei 'connected to|currently online|disconnection' | tail -8 || true
+printf '\nLocal tar1090 HTTP (if installed):\n'; curl -sS -o /dev/null -w 'HTTP %{http_code}\n' --max-time 3 http://127.0.0.1/tar1090/ 2>/dev/null || echo 'Unavailable'

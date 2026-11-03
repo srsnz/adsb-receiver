@@ -1,98 +1,166 @@
-# Raspberry Pi ADS-B receiver — FR24 + ADS-B Exchange + OpenSky
+# ADS-B Receiver for Raspberry Pi
 
-**Fresh-install kit** for a Raspberry Pi with **Raspberry Pi OS Lite** and one RTL-SDR 1090 MHz receiver. Installs a decoder (`readsb`) and guides you through adding three independent feeder services. Intended for **new / blank systems**, not upgrades of existing ADS-B installations.
+A simple way to turn a Raspberry Pi and an RTL-SDR dongle into a **1090 MHz aircraft receiver**. The installer sets up one `readsb` decoder and lets you share its aircraft data with **Flightradar24**, **ADS-B Exchange**, and **OpenSky Network**.
 
-> **Testing:** Bash syntax checked; not yet end-to-end tested on a newly flashed Pi. Upstream installers and package URLs can change. Test on a spare Pi before unattended remote deployment. Review downloaded third-party scripts before authorising execution.
+It also provides a local aircraft map and data feeds for **Virtual Radar Server (VRS)**, your own tracking application, or a monitoring system. Suitable for home installations and remote receiver sites with an internet connection.
 
-## Architecture
+## How it works
 
 ```text
-RTL-SDR USB + 1090 MHz antenna
-           |
-         readsb (single decoder)
-           |  Beast TCP :30005
-           +---- FR24 (network / Beast mode; NOT USB decoder)
-           +---- ADS-B Exchange feed + MLAT
-           +---- OpenSky feeder
-           +---- Optional Virtual Radar Server via LAN/VPN
+1090 MHz antenna → RTL-SDR → Raspberry Pi / readsb
+                                    │
+                                    ├── Beast TCP :30005 ── FR24
+                                    │                 ├── ADS-B Exchange + MLAT
+                                    │                 ├── OpenSky
+                                    │                 └── Your own app / VRS
+                                    ├── Basestation TCP :30003 (if enabled)
+                                    └── tar1090 local aircraft map
 ```
 
-## Requirements
+Only `readsb` controls the USB receiver. The other applications connect to its decoded data; no extra dongles are needed.
 
-- Raspberry Pi with Raspberry Pi OS Lite (Debian-based, **arm64** preferred; armhf also supported).
-- RTL2832-compatible USB SDR, 1090 MHz antenna, power supply, working Internet/DNS/NTP.
-- SSH and a normal user with sudo access (configure in Raspberry Pi Imager).
-- Accurate **latitude, longitude, antenna altitude above mean sea level in metres**.
-- FR24 sharing key (or create a new station); ADS-B Exchange feeder name; optional OpenSky account.
+## What you need
 
-## Installation from a fresh Pi
+- Raspberry Pi with **Raspberry Pi OS Lite**, preferably 64-bit, and a suitable power supply and microSD card.
+- RTL-SDR compatible USB receiver and **1090 MHz antenna**.
+- Internet access with working DNS and time synchronisation (NTP).
+- SSH access and a user with `sudo` privileges.
+- Receiver **latitude**, **longitude** (decimal degrees), and **antenna elevation above sea level** (metres).
+- An email address / account for FR24, an ADS-B Exchange account for station linking, and an OpenSky account if feeding OpenSky.
 
-1. Flash Raspberry Pi OS Lite using Raspberry Pi Imager; configure hostname, user, Wi-Fi if required, SSH, and credentials. Boot with the SDR attached.
-2. SSH into the Pi and run:
+## Install
+
+Flash Raspberry Pi OS Lite using [Raspberry Pi Imager](https://www.raspberrypi.com/software/). Set up the username, network and SSH during imaging. Connect the RTL-SDR, boot the Pi and SSH in.
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y git
-# After replacing the repository contents on GitHub:
+sudo apt update
+sudo apt install -y git
 git clone https://github.com/srsnz/adsb-receiver.git
 cd adsb-receiver
 chmod +x install.sh diagnose.sh
 ./install.sh
 ```
 
-3. Approve the OS dependencies and **readsb** upstream installer after reviewing its downloaded script. The readsb installer may offer a local `tar1090` aircraft map.
-4. Enter site latitude, longitude and antenna altitude. The script uses `readsb-set-location` where available and checks Beast TCP port **30005** before proceeding.
-5. Choose the feeders to install. Each provider's installer has its own interactive configuration. **FR24 must use an external Beast TCP decoder at `127.0.0.1:30005`**, not direct RTL-SDR access. ADS-B Exchange should use the same Beast feed. For OpenSky choose `default` decoder mode and port `30005` (not `hptoa`).
-6. Check actual reporting in each provider dashboard; run `./diagnose.sh`.
+Follow the prompts. The script installs system prerequisites and `readsb`, checks the local Beast output, and offers each feeder installer. Upstream installer scripts are downloaded for review before you approve them.
 
-**Do not run `sudo ./install.sh`.** The script invokes sudo only for privileged actions.
+**Run this on a fresh Raspberry Pi OS Lite installation.** It will not replace an existing ADS-B decoder or feeder configuration.
 
-## Verify
+## Feeder setup reference
 
-```bash
-./diagnose.sh
-sudo systemctl status readsb fr24feed adsbexchange-feed adsbexchange-mlat opensky-feeder --no-pager
-sudo journalctl -u readsb -n 50 --no-pager
-sudo journalctl -u fr24feed -n 50 --no-pager
-sudo journalctl -u adsbexchange-feed -n 50 --no-pager
-sudo journalctl -u opensky-feeder -n 50 --no-pager
+All three feeders should use the **existing decoder on the Pi**, not open the RTL-SDR directly.
+
+### Flightradar24 (FR24)
+
+In the FR24 setup wizard:
+
+| Prompt | Enter / select |
+|---|---|
+| Email | Your FR24 email address |
+| Sharing key | Existing key, or leave blank for a new station |
+| MLAT participation | As preferred; requires accurate receiver location |
+| Latitude / longitude | Your antenna's coordinates |
+| Antenna altitude | **Feet above sea level** (metres × 3.28084) |
+| Receiver type | **4 — ModeS Beast** |
+| Connection type | **1 — Network connection** |
+| Receiver IP / hostname | **`127.0.0.1`** |
+| Receiver data port | **`30005`** |
+| RAW output port 30334 | **No**, unless you specifically need it |
+| Basestation output port 30003 | **No**, unless you specifically need it |
+
+**Important:** The wizard asks for the IP and port separately. Enter `127.0.0.1` in the hostname field, **not** `127.0.0.1:30005`.
+
+The resulting `/etc/fr24feed.ini` should include:
+
+```ini
+receiver="beast-tcp"
+host="127.0.0.1:30005"
 ```
 
-Expected: decoder is active; TCP 30005 listens; feeder processes are active; remote server connections establish. **Actual aircraft uploads must be verified in each provider's station dashboard.** `systemctl is-enabled` indicates boot configuration, not service health.
+Do not publish the FR24 sharing key from that file. Check FR24 using `fr24feed-status` or the local interface at `http://PI-IP:8754`.
 
-## Networking and resilience
+### ADS-B Exchange
 
-- DHCP is fine; reserve a static lease at the router if desired. Keep DNS and NTP functional. Incorrect time/DNS caused a real outage at the Glenorchy/Precipice Hill installation.
-- **Do not forward TCP 30005 to the public Internet.** If you need Virtual Radar Server remotely, use WireGuard/VPN and firewall rules.
-- Only **one** decoder should open the SDR. FR24, ADS-B Exchange and OpenSky should read from the decoder's Beast TCP output.
-- MLAT accuracy depends on correct station coordinates and altitude and reliable timekeeping.
-- All feeder services should be enabled at boot by their installers; confirm using `./diagnose.sh`.
+Choose to install the **feed and MLAT** components. Use the existing local Beast decoder at **`127.0.0.1:30005`** when requested. Install **ADS-B Exchange stats** when prompted; it helps with account linking and station information.
 
-## Existing receiver? Do not use the fresh installer
+**Linking your station:** Open [ADS-B Exchange My IP](https://www.adsbexchange.com/myip/) in a browser using the **same public internet connection** as the Pi, then follow the account-linking instructions. Being connected and sending data is separate from appearing in your ADS-B Exchange account. Keep the feeder's assigned UUID when relocating the same installation.
 
-If you already run `readsb`, `dump1090-fa`, `dump1090-mutability`, FR24 or ADS-B Exchange, this script deliberately stops rather than modifying the working setup. Use the individual upstream feeder instructions to add services to the existing port 30005 decoder.
+Optional local ADS-B Exchange interface:
+
+```bash
+sudo bash /usr/local/share/adsbexchange/git/install-or-update-interface.sh
+```
+
+### OpenSky Network
+
+The OpenSky configuration dialog should use:
+
+| Prompt | Enter / select |
+|---|---|
+| Dump1090 branch | **`default`** (not `hptoa`) |
+| Dump1090 / Beast port | **`30005`** |
+| Receiver location | Your antenna's latitude and longitude |
+| Antenna elevation | **Metres above sea level** |
+| Username | Your OpenSky account username |
+
+The feeder connects to the existing `readsb` Beast output. Check `sudo journalctl -u opensky-feeder -n 30 --no-pager` for a connection to `collector.opensky-network.org`.
+
+## Use the data in your own software
+
+You can consume the same local aircraft stream as the feeder clients. **Do not connect your own software directly to the USB SDR** while `readsb` is running.
+
+| Interface | Address / port | Typical use |
+|---|---|---|
+| **Beast TCP** | `PI-IP:30005` | Virtual Radar Server, custom decoders, remote aggregation |
+| **Basestation / SBS TCP** | `PI-IP:30003` if enabled in `readsb` | VRS and applications expecting SBS messages |
+| **tar1090 map** | `http://PI-IP/tar1090/` | Browser-based aircraft map |
+| **readsb JSON** | Usually `/run/readsb/aircraft.json` on the Pi | Local scripts, APIs, dashboards |
+
+For **Virtual Radar Server**, add a receiver with the Pi's LAN/VPN address, port **30005**, and a Beast-compatible data format; alternatively use port **30003** with a Basestation/SBS receiver format if that output is enabled.
+
+For **your own app**, either consume the Beast stream on TCP `30005` or read the local JSON produced by `readsb`. Beast is a binary protocol; JSON is simpler for scripts and dashboards. Check the actual JSON path and readsb configuration on your installation. A web JSON endpoint is not guaranteed just because tar1090 is installed.
+
+**Remote sites:** use a private network or VPN (for example, WireGuard) to reach the Pi. Do **not** forward the decoder ports directly to the public internet. Reserve the Pi's DHCP address or use a stable hostname if other software depends on it.
+
+## Check status
+
+Run the included diagnostic script:
+
+```bash
+cd ~/adsb-receiver
+./diagnose.sh
+```
+
+Useful manual checks:
+
+```bash
+fr24feed-status
+sudo systemctl status readsb fr24feed adsbexchange-feed adsbexchange-mlat adsbexchange-stats opensky-feeder --no-pager
+sudo ss -ltnp | grep -E ':30005|:30003'
+sudo journalctl -u adsbexchange-feed -n 30 --no-pager
+sudo journalctl -u opensky-feeder -n 30 --no-pager
+```
+
+Services should be active, `readsb` should listen on port `30005`, and the feeder logs should show remote connections. Confirm aircraft data in each provider's dashboard.
 
 ## Troubleshooting
 
-- `getent hosts opensky-network.org` fails: repair DHCP/DNS/router configuration.
-- `timedatectl status` not synchronised: repair NTP before trusting feeder connections.
-- `lsusb` doesn't show RTL-SDR: check USB, power and dongle.
-- `readsb` fails: `sudo journalctl -u readsb -n 80 --no-pager` (permissions, DVB kernel module, missing dongle).
-- No TCP 30005: decoder isn't serving Beast; check `/etc/default/readsb` and readsb logs.
-- FR24 starts another decoder: change FR24 receiver type to Beast TCP/network mode; don't let two programs control the SDR.
-- ADSBx stats page not reachable: `adsbexchange-stats` is optional; verify main feeder separately.
-- OpenSky connects but no station data: check OpenSky account, location, logs and receiver input.
+| Problem | Check |
+|---|---|
+| Feeder disconnected but aircraft appear locally | DNS (`getent hosts pool.ntp.org`) and time (`timedatectl status`) |
+| No aircraft or decoder fails | RTL-SDR USB connection, antenna, `sudo journalctl -u readsb -n 50` |
+| Nothing listening on port 30005 | `readsb` service and `/etc/default/readsb` network settings |
+| FR24 cannot connect | Beast/network mode; `127.0.0.1` and `30005` entered separately in the wizard |
+| ADS-B Exchange not in account | Link from a browser on the same public IP; verify stats service and feeder UUID |
+| OpenSky offline | `sudo journalctl -u opensky-feeder -n 50 --no-pager` |
+| Remote VRS/app cannot connect | Pi IP, VPN routing, firewall, and whether `readsb` binds the required interface |
 
-## Upstream projects / installation sources
+## Projects and credits
 
-- readsb: https://github.com/wiedehopf/readsb
-- readsb installer: https://github.com/wiedehopf/adsb-scripts/blob/master/readsb-install.sh
-- FR24: https://fr24.com/install.sh
-- ADS-B Exchange: https://www.adsbexchange.com/community/feeder-hub/connect-equipment/
-- OpenSky: https://opensky-network.org/
+This installer uses third-party software and official/provider installation processes:
 
-Third-party scripts execute with root privileges only after an interactive approval prompt. For production deployment, review/pin upstream versions and hashes; this package does not pin them.
+- [readsb](https://github.com/wiedehopf/readsb) and [tar1090](https://github.com/wiedehopf/tar1090)
+- [Flightradar24](https://www.flightradar24.com/)
+- [ADS-B Exchange](https://www.adsbexchange.com/)
+- [OpenSky Network](https://opensky-network.org/)
 
-## Security
-
-Never commit FR24 sharing keys, account credentials, `/etc/fr24feed.ini`, local `.env` or site-specific secrets. This repository is intentionally location-independent. Avoid publishing internal IP addresses or operational station identifiers if not needed.
+Keep station keys, account credentials and local configuration files out of GitHub. This repository contains no station-specific secrets.

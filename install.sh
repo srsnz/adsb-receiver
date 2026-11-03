@@ -57,13 +57,25 @@ if ! nc -z -w 3 127.0.0.1 30005; then
   fail 'No Beast TCP output on 127.0.0.1:30005. Fix readsb/SDR before installing feeders.'
 fi
 say 'Install feeder clients (one decoder; all use Beast TCP 127.0.0.1:30005)'
-echo 'FR24: select an external Beast TCP receiver (127.0.0.1:30005). DO NOT select a local USB decoder.'
+cat <<'EOF'
+FR24 wizard answers for a shared readsb decoder:
+  Receiver type: 4 - ModeS Beast
+  Connection type: 1 - Network connection
+  Receiver IP/hostname: 127.0.0.1   (IP ONLY, no :port)
+  Receiver data port: 30005
+  RAW output on 30334: no (unless specifically required)
+  Basestation output on 30003: no (unless specifically required)
+  Enter altitude in FEET for FR24 (installer site altitude is in metres).
+  Do NOT select DVBT/USB: readsb already owns the SDR.
+  After the wizard, confirm receiver=beast-tcp and host=127.0.0.1:30005.
+EOF
 if ask 'Install FR24?'; then
   run_reviewed 'https://fr24.com/install.sh' '/tmp/srs-fr24-install.sh'
 fi
 if ask 'Install ADS-B Exchange feed + MLAT?'; then
   run_reviewed 'https://www.adsbexchange.com/feed.sh' '/tmp/srs-adsbx-feed.sh'
 fi
+echo 'ADS-B Exchange account linking: install stats, then visit https://www.adsbexchange.com/myip/ from the same public IP as the receiver.'
 if ask 'Install ADS-B Exchange stats (recommended for account linking)?'; then
   run_reviewed 'https://www.adsbexchange.com/stats.sh' '/tmp/srs-adsbx-stats.sh'
 fi
@@ -79,5 +91,8 @@ for s in readsb fr24feed adsbexchange-feed adsbexchange-mlat adsbexchange-stats 
   systemctl is-active "$s" 2>/dev/null || true
 done
 if [[ -x ./diagnose.sh ]]; then ./diagnose.sh; fi
-echo 'Done. Check each provider dashboard for actual data reception. A connected TCP socket alone is not proof of accepted data.'
-echo 'No reboot was forced. If readsb has SDR permission errors, check its logs and reboot when convenient.'
+echo 'Installation complete. Confirm your receiver in each provider dashboard.'
+echo 'ADSBx: visit https://www.adsbexchange.com/myip/ from the SAME public IP as the feeder to link it; a remote VPN/office browser may use a different egress IP.'
+echo 'FR24: verify receiver=beast-tcp and host=127.0.0.1:30005 in /etc/fr24feed.ini (never publish the sharing key).'
+echo 'Local map: http://<pi-ip>/tar1090 (if installed). No map on :8080 is required.' 
+echo 'If the SDR is unavailable, check readsb logs and restart the Pi if needed.'
